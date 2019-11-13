@@ -6,8 +6,6 @@
 #include <EthernetUdp.h>
 #include <ArduinoJson.h>
 #include "DHT.h"
-
-// #define BMP280_ADDRESS (0x76)
 #include <Adafruit_BMP280.h>
 
 uint8_t mac[] = {
@@ -40,15 +38,13 @@ const char *PUB_TEMPERATURE_TOPIC = "device/" DEVICE_ALIAS "/temperature";
 const char *PUB_HUMIDUTY_TOPIC = "device/" DEVICE_ALIAS "/humiduty";
 const char *PUB_AMBIENT_TOPIC = "device/" DEVICE_ALIAS "/ambient";
 const char *PUB_FLOAT_TOPIC = "device/" DEVICE_ALIAS "/float";
-const char *PUB_RELAY0_TOPIC = "device/" DEVICE_ALIAS "/relay0";
-const char *PUB_RELAY1_TOPIC = "device/" DEVICE_ALIAS "/relay1";
+const char *PUB_RELAY_TOPIC = "device/" DEVICE_ALIAS "/relay/%d";
 
 const char *PUB_BMP_TEMP_TOPIC = "device/" DEVICE_ALIAS "/bmpTemperature";
 const char *PUB_PRESSURE_TOPIC = "device/" DEVICE_ALIAS "/pressure";
 
 const char *IR_CMD = "IR_CMD";
-const char *RELAY0_CMD = "RELAY0_CMD";
-const char *RELAY1_CMD = "RELAY1_CMD";
+const char *RELAY_CMD = "RELAY_CMD";
 
 // const float divider = 5.0f / 1024.0f;
 const unsigned int UDP_PORT = 37020;
@@ -67,6 +63,7 @@ ToshibaDaiseikaiHeatpumpIR *heatpumpIR;
 const size_t capacity = JSON_OBJECT_SIZE(3) + 60;
 DynamicJsonDocument doc(capacity);
 
+char _topicBuf[32];
 void callback(char *topic, uint8_t *payload, unsigned int length)
 {
   // In order to republish this payload, a copy must be made
@@ -89,22 +86,34 @@ void callback(char *topic, uint8_t *payload, unsigned int length)
     Serial.println(IR_CMD);
     irCommand(p, length);
   }
-  else if (memcmp(topic + DEVICE_LENGTH, RELAY0_CMD, 10) == 0)
+  else if (memcmp(topic + DEVICE_LENGTH, RELAY_CMD, 9) == 0)
   {
+    Serial.println();
     Serial.print(F("Recieved: "));
-    Serial.println(RELAY0_CMD);
+    Serial.println(RELAY_CMD);
 
-    relayCommand(0, (bool)payload);
-    mqttClient.publish(PUB_RELAY0_TOPIC, p, 4, true);
-  }
-  else if (memcmp(topic + DEVICE_LENGTH, RELAY1_CMD, 10) == 0)
-  {
-    Serial.print(F("Recieved: "));
-    Serial.println(RELAY1_CMD);
+    uint8_t relayId = atoi(topic + DEVICE_LENGTH + 10);
+    uint8_t state = *p;
+    relayCommand(relayId, state);
 
-    relayCommand(1, (bool)payload);
-    mqttClient.publish(PUB_RELAY1_TOPIC, p, 4, true);
+    Serial.print(F("ID: "));
+    Serial.println(relayId);
+    Serial.print(F("Payload: "));
+    Serial.println(state, BIN);
+    Serial.print(F("Length: "));
+    Serial.println(length);
+
+    sprintf(_topicBuf, PUB_RELAY_TOPIC, relayId);
+    mqttClient.publish(_topicBuf, p, 1, true);
   }
+  // else if (memcmp(topic + DEVICE_LENGTH, RELAY1_CMD, 10) == 0)
+  // {
+  //   Serial.print(F("Recieved: "));
+  //   Serial.println(RELAY1_CMD);
+
+  //   relayCommand(1, (bool)payload);
+  //   mqttClient.publish(PUB_RELAY_TOPIC, p, 4, true);
+  // }
   else
   {
     // Serial.print(topic);
@@ -150,9 +159,9 @@ void irCommand(uint8_t *payload, unsigned int length)
   heatpumpIR->send(irSender, power, mode, fan, temp, v_swing, h_swing);
 }
 
-void relayCommand(uint8_t no, bool status)
+void relayCommand(uint8_t no, uint8_t state)
 {
-  digitalWrite(relays[no], status);
+  digitalWrite(relays[no], state);
 }
 
 unsigned long lastReadDHT11;
@@ -286,29 +295,45 @@ void udpLoop()
   }
 }
 
+unsigned long lastTestMillis;
+uint16_t a = 285;
+void testFloatLoop()
+{
+  if (millis() - lastTestMillis > 1000)
+  {
+    lastTestMillis = millis();
+
+    mqttClient.publish(PUB_FLOAT_TOPIC, (uint8_t *)&a, 2, true);
+  }
+}
+
 unsigned long lastReadbmp280 = 0;
-float curbmp280Temp;
-float lastbmp280Temp;
-float curbmp280pressure;
-float lastbmp280pressure;
+uint16_t curBmp280Temp;
+uint16_t lastBmp280Temp;
+uint32_t curBmp280Pressure;
+uint32_t lastBmp280Pressure;
 void bmp280Loop()
 {
   if (millis() - lastReadbmp280 > 10000)
   {
     lastReadbmp280 = millis();
 
-    curbmp280Temp = bmp.readTemperature();
-    curbmp280pressure = bmp.readPressure();
+    curBmp280Temp = (uint16_t)bmp.readTemperature();
+    curBmp280Pressure = (uint32_t)(bmp.readPressure() / 100.0f);
 
-    if (lastbmp280Temp != curbmp280Temp)
+    if (lastBmp280Temp != curBmp280Temp)
     {
-      lastbmp280Temp = curbmp280Temp;
-      mqttClient.publish(PUB_BMP_TEMP_TOPIC, (uint8_t *)&curbmp280Temp, 4, true);
+      lastBmp280Temp = curBmp280Temp;
+      mqttClient.publish(PUB_BMP_TEMP_TOPIC, (uint8_t *)&curBmp280Temp, 2, true);
     }
-    if (lastbmp280pressure != curbmp280pressure)
+    if (lastBmp280Pressure != curBmp280Pressure)
     {
-      lastbmp280pressure = curbmp280pressure;
-      mqttClient.publish(PUB_PRESSURE_TOPIC, (uint8_t *)&curbmp280pressure, 4, true);
+      // Serial.print("Last: ");
+      // Serial.println(lastBmp280Pressure);
+      // Serial.print("Current: ");
+      // Serial.println(curBmp280Pressure);
+      lastBmp280Pressure = curBmp280Pressure;
+      mqttClient.publish(PUB_PRESSURE_TOPIC, (uint8_t *)&curBmp280Pressure, 4, true);
     }
   }
 }
@@ -397,7 +422,7 @@ void loop()
         {
           lastReconnectAttempt = 0;
           Serial.print(F("Mqtt connected IP: "));
-          Serial.print(mqttServer);
+          Serial.println(mqttServer);
         }
       }
     }
